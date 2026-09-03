@@ -224,8 +224,17 @@ def _suppression_keys(series_id, now):
     keys = set()
     for r in rows:
         rule = r["rule"]
-        window = (config.SUPPRESS_EMA_HOURS if rule == "ema"
-                  else float(rule.replace("drift_", "").replace("h", "")))
+        # A rule string from an older deploy, or a hand-inserted row, can
+        # be anything. Parse defensively: an unrecognised rule is skipped
+        # (it simply won't suppress) rather than raising ValueError and
+        # aborting the entire detection pass for this series.
+        if rule == "ema":
+            window = config.SUPPRESS_EMA_HOURS
+        else:
+            try:
+                window = float(rule.replace("drift_", "").replace("h", ""))
+            except (ValueError, AttributeError):
+                continue
         if _parse_ts(r["detected_at"]) >= now - datetime.timedelta(hours=window):
             keys.add((r["side"], rule, _bucket(r.get("moneyness"))))
     return keys

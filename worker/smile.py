@@ -96,9 +96,29 @@ def atm_iv(records, spot):
     """
     if spot is None:
         return None
-    c = interp([(r["strike"], r.get("call_impvlt")) for r in records], spot)
-    p = interp([(r["strike"], r.get("put_impvlt")) for r in records], spot)
-    vals = [v for v in (c, p) if v is not None and v > 0]
+
+    # Filter dead strikes (iv <= 0 or missing) BEFORE interpolating, the
+    # same way build_smile does. Feeding a 0.0 from an illiquid strike
+    # into interp drags the interpolated ATM value down, and that value
+    # is the denominator of atm_iv_change_pct and the baseline of every
+    # skew calculation — so the error propagates into stored evidence.
+    def side_iv(field):
+        pts = [(r["strike"], r[field]) for r in records if (r.get(field) or 0) > 0]
+        if not pts:
+            return None
+        v = interp(pts, spot)
+        if v is not None:
+            return v
+        # interp needs two points and won't extrapolate. With exactly one
+        # clean quote, use the nearest (only) one rather than discarding
+        # the whole side — a single good strike beats no ATM estimate.
+        if len(pts) == 1:
+            return pts[0][1]
+        # Multiple points but spot is outside their range: take the
+        # closest strike's IV rather than nothing.
+        return min(pts, key=lambda p: abs(p[0] - spot))[1]
+
+    vals = [v for v in (side_iv("call_impvlt"), side_iv("put_impvlt")) if v is not None and v > 0]
     if not vals:
         return None
     return sum(vals) / len(vals)

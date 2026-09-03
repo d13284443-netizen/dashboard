@@ -1,0 +1,39 @@
+--- /tmp/scanner.orig.js	2026-09-03 09:07:44.147649171 +0000
++++ dashboard/strategy-scanner.js	2026-09-03 09:07:44.148341482 +0000
+@@ -361,3 +361,36 @@
+   document.getElementById("scan-round").addEventListener("change", (e) => { CFG.round_only = e.target.checked; });
+   document.getElementById("scan-delta-active").addEventListener("change", (e) => { CFG.delta_active = e.target.checked; });
+ }
++
++/* ============================================================
++   TEST SEAM — added to make the strategy builders testable.
++
++   Everything above keeps its module-private state (chain, spot, CFG,
++   selected) exactly as before; this block only exposes a controlled
++   way to set that state and invoke the builders directly, without a
++   DOM, a Supabase round trip, or a user click.
++
++   Nothing in the application imports this. It exists so the pure
++   scanning logic — which is where the money maths lives — can be
++   covered by tests. If you would rather not ship a test hook in
++   production code, the alternative is to lift chain/spot/CFG into a
++   context object passed to each builder; that is a larger change with
++   the same testing benefit.
++   ============================================================ */
++export const __test = {
++  setChain(rows, spotPrice) { chain = rows; spot = spotPrice; },
++  setConfig(over) { Object.assign(CFG, over); },
++  resetConfig() {
++    Object.assign(CFG, {
++      min_rr: 0.3, min_premium: 0.5, min_oi: 0,
++      round_only: false, delta_active: false, target_delta: 50, delta_tol: 10,
++      spread_width_min: 25, spread_width_max: 200,
++      strangle_gap_min: 25, strangle_gap_max: 300,
++      atm_band: 60, max_per_strategy: 5,
++    });
++  },
++  get config() { return CFG; },
++  run(key) { return RUNNERS[key](); },
++  helpers: { px, legOk, mkLeg, passOI, isRound, top, result },
++  STRATEGIES,
++};

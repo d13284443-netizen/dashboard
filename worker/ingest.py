@@ -148,6 +148,14 @@ def retire(path):
 
 _locked = set()
 
+# Highest snapshot_ts written to latest_chain per series, so a replayed
+# older file can't overwrite newer prices. Process-local; the schema
+# trigger is the durable cross-restart guarantee, this just avoids the
+# round-trip. Seeded lazily: an unknown series has no entry, so its
+# first file of the run always writes (correct — nothing to be stale
+# against yet that the trigger won't also catch).
+_latest_chain_ts = {}
+
 
 def ingest_one(path):
     filename = os.path.basename(path)
@@ -171,7 +179,16 @@ def ingest_one(path):
         db.log("ingest", f"{filename}: no timestamp in filename — quarantined", level="warn")
         quarantine(path)
         return None
-    snap_ts = snap_dt.replace(tzinfo=datetime.timezone.utc)
+    # Interpret the naive filename time in the VPS's configured zone,
+    # then convert to UTC. With WATCH_TZ=UTC (the default) this is
+    # identical to the old behaviour; with a real local zone it fixes
+    # the offset that would otherwise skew every snapshot_ts.
+    try:
+        from zoneinfo import ZoneInfo
+        local_tz = ZoneInfo(config.WATCH_TZ)
+    except Exception:
+        local_tz = datetime.timezone.utc
+    snap_ts = snap_dt.replace(tzinfo=local_tz).astimezone(datetime.timezone.utc)
 
     spot = smile.detect_spot(records)
     atm = smile.atm_iv(records, spot)
@@ -218,8 +235,24 @@ def ingest_one(path):
 
     db.insert("iv_ticks", ticks,
               on_conflict="snapshot_ts,series_id,strike,side", upsert=False)
-    db.insert("latest_chain", chain_rows,
-              on_conflict="series_id,strike", upsert=True)
+
+    # latest_chain must only ever move FORWARD in time. Replaying a
+    # quarantined/older file (which the README invites) would otherwise
+    # overwrite current prices with stale ones, and the payoff builder
+    # and scanner both read this table. Two layers guard it: a BEFORE
+    # UPDATE trigger in the schema (protects against any writer), and
+    # this process-local check (skips the write entirely so we don't
+    # even round-trip a stale file). The database trigger is the durable
+    # guarantee; this is the cheap fast path.
+    prev = _latest_chain_ts.get(series_id)
+    if prev is not None and snap_ts <= prev:
+        db.log("ingest", f"{filename}: snapshot {snap_ts:%H:%M} is not newer than "
+                         f"{prev:%H:%M} already in latest_chain — skipping chain overwrite",
+               level="warn")
+    else:
+        db.insert("latest_chain", chain_rows,
+                  on_conflict="series_id,strike", upsert=True)
+        _latest_chain_ts[series_id] = snap_ts
 
     retire(path)
     return {"series_id": series_id, "symbol": symbol, "snapshot_ts": snap_ts,

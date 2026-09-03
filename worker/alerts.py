@@ -117,7 +117,8 @@ def notify(symbol, events):
         groups = [g for g in groups if not g["all_suppressed"]]
 
     order = {"high": 0, "warn": 1, "info": 2}
-    groups.sort(key=lambda g: (order[g["severity"]], -(g["max_adj"] or g["max_raw"])))
+    groups.sort(key=lambda g: (order[g["severity"]],
+                               -(g["max_adj"] if g["max_adj"] is not None else g["max_raw"])))
 
     to_send = groups[:config.MAX_ALERTS_PER_CYCLE]
     for g in to_send:

@@ -52,9 +52,30 @@ def send(msg):
         return False
 
 
+def default_partition_count():
+    """Rows trapped in iv_ticks_default. Should always be 0. Non-zero
+    means partition creation fell behind — the failure mode that can
+    jam the partitioned table. Returns None if the RPC isn't reachable
+    (older schema, network), which the caller treats as 'don't alert'."""
+    try:
+        import requests
+        r = requests.post(
+            f"{config.SUPABASE_URL}/rest/v1/rpc/iv_ticks_default_count",
+            headers={"apikey": config.SUPABASE_SERVICE_KEY,
+                     "Authorization": f"Bearer {config.SUPABASE_SERVICE_KEY}",
+                     "Content-Type": "application/json"},
+            json={}, timeout=10)
+        if r.status_code < 300:
+            return int(r.json())
+    except Exception:
+        pass
+    return None
+
+
 def run():
     config.require("SUPABASE_URL", "SUPABASE_SERVICE_KEY")
     alerted = False
+    partition_alerted = False
     threshold = datetime.timedelta(minutes=STALE_MINUTES)
     print(f"watchdog: alerting after {STALE_MINUTES} min without a successful ingest")
 
@@ -75,6 +96,23 @@ def run():
                 if send("\u2705 IV monitor: ingest recovered, data is flowing again."):
                     alerted = False
                     db.log("watchdog", "recovery notice sent")
+
+            # Default-partition trap: rows here mean partition creation
+            # fell behind. Left unchecked this jams partition creation and
+            # blocks retention — the class of failure that filled the
+            # previous database. Alert once on the transition into a
+            # non-empty default, clear once it drains.
+            dc = default_partition_count()
+            if dc is not None:
+                if dc > 0 and not partition_alerted:
+                    if send(f"\u26a0\ufe0f IV monitor: {dc} rows in the default partition.\n"
+                            f"Partition creation has fallen behind — run "
+                            f"select ensure_iv_tick_partitions(3); on the database."):
+                        partition_alerted = True
+                        db.log("watchdog", f"default partition non-empty ({dc} rows)", level="error")
+                elif dc == 0 and partition_alerted:
+                    partition_alerted = False
+                    db.log("watchdog", "default partition drained")
         except Exception as e:
             db.log("watchdog", f"check failed: {e}", level="error")
         time.sleep(CHECK_SECONDS)

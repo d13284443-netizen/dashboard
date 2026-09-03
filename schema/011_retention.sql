@@ -33,7 +33,21 @@ as $$
 declare
     d date;
     part_name text;
+    default_has_rows boolean;
 begin
+    -- Is anything sitting in the default partition? If so, creating a
+    -- partition whose range overlaps those rows would be REJECTED by
+    -- Postgres, jamming partition creation for that date permanently —
+    -- the trap the test suite (§5) and 011's header both flag. When the
+    -- default is non-empty we take the safe, slightly heavier path:
+    -- detach it, create the partitions, migrate any overlapping rows out
+    -- of the detached table into their proper partition, then reattach.
+    select exists (select 1 from iv_ticks_default limit 1) into default_has_rows;
+
+    if default_has_rows then
+        alter table iv_ticks detach partition iv_ticks_default;
+    end if;
+
     for i in 0..days_ahead loop
         d := (current_date + i);
         part_name := 'iv_ticks_' || to_char(d, 'YYYYMMDD');
@@ -42,8 +56,24 @@ begin
                 'create table %I partition of iv_ticks for values from (%L) to (%L)',
                 part_name, d::timestamptz, (d + 1)::timestamptz
             );
+            -- Move any rows that were trapped in the default for this
+            -- date into the partition that now owns their range. Cheap
+            -- when the default is empty (the common case never even
+            -- reaches this branch); bounded by one day of rows otherwise.
+            if default_has_rows then
+                execute format(
+                    'with moved as (delete from iv_ticks_default '
+                    || 'where snapshot_ts >= %L and snapshot_ts < %L returning *) '
+                    || 'insert into %I select * from moved',
+                    d::timestamptz, (d + 1)::timestamptz, part_name
+                );
+            end if;
         end if;
     end loop;
+
+    if default_has_rows then
+        alter table iv_ticks attach partition iv_ticks_default default;
+    end if;
 end;
 $$;
 
@@ -102,6 +132,23 @@ $$;
 create or replace function purge_old_debug_log()
 returns void language sql as $$
     delete from debug_log where logged_at < now() - interval '14 days';
+$$;
+
+
+-- ---------------------------------------------------------------------
+-- iv_ticks_default_count — how many rows are trapped in the default
+-- partition. Should always be 0. A non-zero value means partition
+-- creation fell behind and rows landed in the catch-all; the watchdog
+-- polls this and alerts, and ensure_iv_tick_partitions() will migrate
+-- them out on its next run. Exposed as SECURITY DEFINER so the worker
+-- can call it via PostgREST RPC with the service key.
+-- ---------------------------------------------------------------------
+create or replace function iv_ticks_default_count()
+returns bigint
+language sql
+security definer
+as $$
+    select count(*) from iv_ticks_default;
 $$;
 
 

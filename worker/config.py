@@ -25,6 +25,15 @@ WATCH_DIR = os.environ.get("WATCH_DIR", str(Path.home() / "Downloads"))
 WATCH_PATTERN = os.environ.get("WATCH_PATTERN", "options-*.xlsx")
 INSTRUMENT = os.environ.get("INSTRUMENT", "GOLD")
 
+# Timezone the CQG-downloaded filenames are stamped in. CQG names files
+# in the BROWSER's local time, so on a VPS not running UTC the naive
+# filename time must be converted, not just labelled UTC. Default "UTC"
+# preserves the original behaviour (correct only if the VPS clock is
+# UTC). Set to e.g. "Asia/Dubai" if the VPS runs local time, and the
+# filename time will be interpreted in that zone and converted to UTC
+# before storage. Requires a valid IANA zone name.
+WATCH_TZ = os.environ.get("WATCH_TZ", "UTC")
+
 # Poll frequently even though files only land every 15-20 min — polling
 # is nearly free locally, and it minimises the delay between a file
 # appearing and an alert going out.

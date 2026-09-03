@@ -1,3 +1,6 @@
+import { initStrategy, loadStrategyChain, loadLegsIntoBuilder } from "./strategy-builder.js";
+import { initScanner } from "./strategy-scanner.js";
+
 /* ============================================================
    app.js — Vol Desk dashboard.
 
@@ -142,6 +145,7 @@ async function loadSeries() {
     .join("");
   ["chain-series", "hist-series"].forEach((id) => { $(id).innerHTML = opts; });
   $("spike-series").innerHTML = `<option value="">All expiries</option>` + opts;
+  const ss = $("strat-series"); if (ss) { ss.innerHTML = opts; ss.value = state.activeSeries; }
   $("chain-series").value = state.activeSeries;
   $("hist-series").value = state.activeSeries;
 }
@@ -159,6 +163,7 @@ function renderActiveView(view) {
   if (view === "chain") return loadChain();
   if (view === "history") return loadHistory();
   if (view === "spikes") return loadSpikes();
+  if (view === "strategy") return loadStrategyChain();
   if (view === "system") return loadSystem();
 }
 
@@ -257,12 +262,12 @@ function spikeHtml(s) {
     </div>
     <div class="spike-nums">
       Raw <b class="chg-up">${signedPct(s.raw_pct_change)}</b>
-      ${adj != null ? `· Adj <b class="${adj >= 0 ? "chg-up" : "chg-down"}">${signedPct(adj)}</b>` : `· Adj <b>n/a</b>`}
-      ${s.spot_move_pct != null ? `· spot ${signedPct(s.spot_move_pct, 2)}` : ""}
+      ${adj != null ? `· Adj <b class="${adj >= 0 ? "chg-up" : "chg-down"}">${signedPct(adj)}</b>` : `· Adj <b>N/A</b>`}
+      ${s.spot_move_pct != null ? `· Spot ${signedPct(s.spot_move_pct, 2)}` : ""}
     </div>
     <div class="badges">
-      ${s.would_suppress ? `<span class="badge smile">likely smile roll</span>` : `<span class="badge real">real vol move</span>`}
-      ${isRound(s.strike) ? `<span class="badge round">round ×25</span>` : ""}
+      ${s.would_suppress ? `<span class="badge smile">Likely Smile Roll</span>` : `<span class="badge real">Real Vol Move</span>`}
+      ${isRound(s.strike) ? `<span class="badge round">Round x25</span>` : ""}
     </div>
   </div>`;
 }
@@ -548,6 +553,8 @@ function wire() {
     return;
   }
   wire();
+  initStrategy({ rest, state, fmt });
+  initScanner({ rest, state, fmt, loadLegsIntoBuilder });
   const saved = localStorage.getItem("iv_session");
   if (saved) {
     try {

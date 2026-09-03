@@ -151,6 +151,43 @@ svg .series-area { fill:url(#ag); opacity:0.5; }
 .log-line .ts { color:var(--text-faint); flex-shrink:0; font-variant-numeric:tabular-nums; }
 .empty { padding:48px 20px; text-align:center; color:var(--text-faint); font-size:13px; }
 .loading { padding:48px 20px; text-align:center; color:var(--text-dim); font-size:13px; }
+.legs-table { width:100%; border-collapse:collapse; }
+.legs-table th { font-size:11px; padding:8px 10px; }
+.legs-table td { padding:6px 10px; font-size:12px; }
+.legs-table .leg-side-buy { color:var(--up); font-weight:600; }
+.legs-table .leg-side-sell { color:var(--down); font-weight:600; }
+.legs-table input { width:60px; background:rgba(0,0,0,0.3); border:1px solid var(--border-hi); color:var(--text); font-size:12px; padding:4px 6px; border-radius:6px; outline:none; font-variant-numeric:tabular-nums; }
+.legs-table input:focus { border-color:var(--accent); }
+.leg-remove { background:none; border:none; color:var(--text-faint); cursor:pointer; font-size:14px; padding:2px 6px; border-radius:6px; transition:all 0.15s; }
+.leg-remove:hover { color:var(--down); background:rgba(255,69,58,0.1); }
+.add-leg { padding:14px 16px; border-top:1px solid var(--border); }
+.add-leg-row { display:flex; gap:8px; margin-bottom:8px; }
+.add-leg-row select { flex:1; }
+.add-leg-hint { color:var(--text-faint); font-size:11px; min-height:14px; }
+.payoff-summary { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:1px; background:var(--border); border-top:1px solid var(--border); }
+.payoff-summary .cell { background:var(--panel-solid); padding:12px 16px; }
+.payoff-summary .cell .k { color:var(--text-faint); font-size:11px; margin-bottom:3px; }
+.payoff-summary .cell .v { font-size:16px; font-weight:600; letter-spacing:-0.01em; font-variant-numeric:tabular-nums; }
+.payoff-summary .v.pos { color:var(--up); }
+.payoff-summary .v.neg { color:var(--down); }
+.chip[data-strat-tab].on { color:#04140F; background:var(--accent); border-color:var(--accent); }
+svg .payoff-pos { fill:rgba(48,209,88,0.14); }
+svg .payoff-neg { fill:rgba(255,69,58,0.14); }
+svg .payoff-line { fill:none; stroke:#F5F5F7; stroke-width:2; stroke-linejoin:round; }
+svg .zero-line { stroke:rgba(255,255,255,0.18); stroke-width:1; stroke-dasharray:3 3; }
+svg .be-line { stroke:var(--accent-2); stroke-width:1; stroke-dasharray:2 2; }
+svg .spot-line { stroke:var(--warn); stroke-width:1; stroke-dasharray:4 2; }
+.scan-section { margin-bottom:20px; }
+.scan-section-head { font-size:13px; font-weight:600; color:var(--text); margin-bottom:10px; padding-left:2px; }
+.scan-card { background:var(--panel); border:1px solid var(--border); border-radius:var(--radius-sm); padding:14px 16px; margin-bottom:10px; transition:transform 0.15s var(--ease),box-shadow 0.2s; }
+.scan-card:hover { transform:translateY(-1px); box-shadow:0 6px 20px rgba(0,0,0,0.3); }
+.scan-card-top { display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; }
+.scan-desc { font-size:13px; font-weight:600; }
+.scan-legs { display:flex; flex-wrap:wrap; gap:8px 16px; margin-bottom:10px; }
+.scan-leg { font-size:12px; color:var(--text-dim); font-variant-numeric:tabular-nums; }
+.scan-metrics { display:flex; flex-wrap:wrap; gap:6px 18px; font-size:12px; color:var(--text-faint); border-top:1px solid var(--border); padding-top:10px; }
+.scan-metrics b { color:var(--text); font-weight:600; font-variant-numeric:tabular-nums; }
+.scan-load { font-size:11px; }
 </style>
 </head>
 <body>
@@ -176,6 +213,7 @@ svg .series-area { fill:url(#ag); opacity:0.5; }
     <button class="tab active" data-view="chain">Chain</button>
     <button class="tab" data-view="history">IV History</button>
     <button class="tab" data-view="spikes">Spike Log</button>
+    <button class="tab" data-view="strategy">Strategy</button>
     <button class="tab" data-view="system">System</button>
   </div>
   <div class="view active" id="view-chain">
@@ -230,14 +268,80 @@ svg .series-area { fill:url(#ag); opacity:0.5; }
     </div>
     <div class="filter-bar">
       <span class="filter-label">Strike range</span>
-      <input class="num-input tnum" id="strike-lo" type="number" placeholder="min $" step="25">
+      <input class="num-input tnum" id="strike-lo" type="number" placeholder="Min $" step="25">
       <span class="filter-label">to</span>
-      <input class="num-input tnum" id="strike-hi" type="number" placeholder="max $" step="25">
+      <input class="num-input tnum" id="strike-hi" type="number" placeholder="Max $" step="25">
       <button class="chip" id="range-around-spot">± around spot</button>
       <input class="num-input tnum" id="range-width" type="number" placeholder="±$" value="200" step="50" style="width:80px">
     </div>
     <div class="panel"><div class="panel-head"><span>Detections</span><span class="muted" id="spike-count"></span></div><div id="spike-list"></div></div>
   </div>
+  <div class="view" id="view-strategy">
+    <div class="controls">
+      <select id="strat-series"></select>
+      <button class="chip" id="strat-tab-builder" data-strat-tab="builder">Payoff Builder</button>
+      <button class="chip" id="strat-tab-scanner" data-strat-tab="scanner">Scanner</button>
+    </div>
+
+    <!-- Builder -->
+    <div id="strat-builder">
+      <div class="chain-layout" style="grid-template-columns:1fr 380px;">
+        <div class="panel">
+          <div class="panel-head"><span>Payoff at expiry</span><span class="muted" id="strat-spot-label"></span></div>
+          <div class="chart-wrap" id="payoff-chart"></div>
+          <div id="payoff-summary" class="payoff-summary"></div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><span>Legs</span><button class="chip" id="clear-legs">Clear</button></div>
+          <div id="legs-container">
+            <table class="legs-table">
+              <thead><tr><th class="l">Side</th><th class="l">Type</th><th>Strike</th><th>Qty</th><th>Entry</th><th></th></tr></thead>
+              <tbody id="legs-body"></tbody>
+            </table>
+            <div id="legs-empty" class="empty" style="padding:24px">No legs yet. Add one below.</div>
+          </div>
+          <div class="add-leg">
+            <div class="add-leg-row">
+              <select id="new-side"><option value="buy">Buy</option><option value="sell">Sell</option></select>
+              <select id="new-type"><option value="call">Call</option><option value="put">Put</option><option value="future">Future</option></select>
+              <select id="new-strike"></select>
+            </div>
+            <div class="add-leg-row">
+              <input class="num-input tnum" id="new-qty" type="number" value="1" min="1" step="1" style="width:64px" title="Quantity">
+              <input class="num-input tnum" id="new-entry" type="number" step="0.01" placeholder="entry" style="width:96px" title="Entry price">
+              <button class="primary" id="add-leg-btn" style="flex:1;margin:0;padding:9px">Add leg</button>
+            </div>
+            <div class="add-leg-hint" id="add-leg-hint"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Scanner -->
+    <div id="strat-scanner" style="display:none">
+      <div class="panel" style="margin-bottom:16px">
+        <div class="panel-head"><span>Scan filters</span></div>
+        <div style="padding:14px 16px">
+          <div class="filter-label" style="margin-bottom:8px">Strategies to scan</div>
+          <div class="chips" id="scan-strategies" style="margin-bottom:16px"></div>
+          <div class="filter-bar">
+            <span class="filter-label">Min R:R</span><input class="num-input tnum" id="scan-min-rr" type="number" value="0.3" step="0.1" style="width:74px">
+            <span class="filter-label">Min premium</span><input class="num-input tnum" id="scan-min-prem" type="number" value="0.5" step="0.5" style="width:74px">
+            <span class="filter-label">Min OI</span><input class="num-input tnum" id="scan-min-oi" type="number" value="0" step="10" style="width:74px">
+            <label class="toggle"><input type="checkbox" id="scan-round"><span class="track"></span>Round strikes only</label>
+          </div>
+          <div class="filter-bar">
+            <label class="toggle"><input type="checkbox" id="scan-delta-active"><span class="track"></span>Delta target</label>
+            <span class="filter-label">Target Δ</span><input class="num-input tnum" id="scan-target-delta" type="number" value="50" step="5" style="width:70px">
+            <span class="filter-label">± tol</span><input class="num-input tnum" id="scan-delta-tol" type="number" value="10" step="5" style="width:64px">
+            <button class="primary" id="scan-run" style="margin:0;padding:9px 20px;width:auto">Run scan</button>
+          </div>
+        </div>
+      </div>
+      <div id="scan-results"><div class="empty">Pick strategies and filters, then Run scan.</div></div>
+    </div>
+  </div>
+
   <div class="view" id="view-system">
     <div class="chain-layout">
       <div class="panel"><div class="panel-head"><span>Worker health</span></div><div id="health-panel"></div></div>
@@ -246,6 +350,6 @@ svg .series-area { fill:url(#ag); opacity:0.5; }
   </div>
 </div>
 <script src="config.js"></script>
-<script src="app.js"></script>
+<script type="module" src="app.js"></script>
 </body>
 </html>

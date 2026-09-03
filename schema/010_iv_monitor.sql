@@ -159,6 +159,32 @@ alter table latest_chain enable row level security;
 create policy "authenticated read latest_chain" on latest_chain
     for select to authenticated using (true);
 
+-- Ordering guard: a replayed or out-of-order file must never overwrite
+-- newer chain data with staler prices. The upsert comes through
+-- PostgREST as ON CONFLICT DO UPDATE, whose SET clause can't itself
+-- compare timestamps, so the guard lives in a BEFORE UPDATE trigger
+-- that protects the table no matter who writes — the worker, a manual
+-- replay of a quarantined file (which the README invites), or a hand
+-- edit. If the incoming row is not newer, the existing row is kept.
+-- The payoff builder and scanner both read this table, so a stale
+-- overwrite would show wrong premiums in the UI with no error anywhere.
+create or replace function latest_chain_reject_stale()
+returns trigger
+language plpgsql
+as $$
+begin
+    if new.snapshot_ts < old.snapshot_ts then
+        return old;  -- keep the newer row, ignore the stale write
+    end if;
+    return new;
+end;
+$$;
+
+drop trigger if exists trg_latest_chain_reject_stale on latest_chain;
+create trigger trg_latest_chain_reject_stale
+    before update on latest_chain
+    for each row execute function latest_chain_reject_stale();
+
 
 -- ---------------------------------------------------------------------
 -- iv_daily — tiny long-horizon rollup, ~1,500 rows/day.

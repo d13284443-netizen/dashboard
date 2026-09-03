@@ -17,7 +17,22 @@ const AUTH = `${CFG.SUPABASE_URL}/auth/v1`;
 
 let session = null;
 let refreshTimer = null;
-const state = { series: [], activeSeries: null, spikeFilter: "all" };
+const ROUND_STEP = 25;  // gold: multiples of 25 count as "round"
+const state = {
+  series: [], activeSeries: null,
+  filters: { side: "all", type: "all", roundOnly: false, minRaw: null, maxRaw: null, rule: "" },
+};
+const isRound = (strike) => Math.abs(strike % ROUND_STEP) < 1e-6;
+// Rule labels: ema -> EMA, drift_6h -> Drift 6h (tidy, human)
+function prettyRule(rule) {
+  if (!rule) return "";
+  if (rule.toLowerCase() === "ema") return "EMA";
+  const m = rule.match(/^drift_(\d+)h$/i);
+  if (m) return `Drift ${m[1]}h`;
+  return rule.charAt(0).toUpperCase() + rule.slice(1);
+}
+let _spikeTimer = null;
+function debouncedSpikes() { clearTimeout(_spikeTimer); _spikeTimer = setTimeout(loadSpikes, 300); }
 
 /* ---------- tiny helpers ---------- */
 const $ = (id) => document.getElementById(id);
@@ -27,7 +42,7 @@ const el = (tag, cls, txt) => {
   if (txt != null) e.textContent = txt;
   return e;
 };
-const fmt = (n, d = 2) => (n == null || isNaN(n) ? "—" : Number(n).toFixed(d));
+const fmt = (n, d = 2) => (n == null || isNaN(n) ? "" : Number(n).toFixed(d));
 const pct = (n, d = 1) => (n == null || isNaN(n) ? "—" : (n * 100).toFixed(d) + "%");
 const signedPct = (n, d = 1) => {
   if (n == null || isNaN(n)) return "—";
@@ -199,18 +214,19 @@ function renderChainMeta(snap) {
   if (!snap) { box.innerHTML = ""; return; }
   box.innerHTML = [
     ["Spot", fmt(snap.spot, 2)],
-    ["ATM IV", snap.atm_iv != null ? fmt(snap.atm_iv, 2) : "—"],
-    ["DTE", snap.days_to_expiry ?? "—"],
-    ["Liquid", `${snap.liquid_strike_count ?? "—"} / ${(snap.strike_count ?? 0) * 2}`],
+    ["ATM IV", snap.atm_iv != null ? fmt(snap.atm_iv, 2) : ""],
+    ["DTE", snap.days_to_expiry ?? ""],
+    ["Liquid", `${snap.liquid_strike_count ?? ""} / ${(snap.strike_count ?? 0) * 2}`],
   ].map(([k, v]) => `<div class="stat"><div class="k">${k}</div><div class="v">${v}</div></div>`).join("");
 }
 
 function rowHtml(r, isAtm) {
-  return `<tr class="${isAtm ? "atm-row" : ""}">
+  const cls = [isAtm ? "atm-row" : "", isRound(r.strike) ? "round-strike" : ""].filter(Boolean).join(" ");
+  return `<tr class="${cls}">
     <td class="l dim">${fmt(r.call_oi, 0)}</td>
     <td class="call">${fmt(r.call_delta, 0)}</td>
     <td class="call">${fmt(r.call_iv, 2)}</td>
-    <td class="strike">${fmt(r.strike, 0)}</td>
+    <td class="strike c">${fmt(r.strike, 0)}</td>
     <td class="put">${fmt(r.put_iv, 2)}</td>
     <td class="put">${fmt(r.put_delta, 0)}</td>
     <td class="l dim">${fmt(r.put_oi, 0)}</td>
@@ -234,15 +250,18 @@ function spikeHtml(s) {
   const adj = s.adj_pct_change;
   return `<div class="spike ${s.severity}">
     <div class="spike-top">
-      <span class="spike-title">${side} ${fmt(s.strike, 0)} · ${s.rule}</span>
+      <span class="spike-title">${side} ${fmt(s.strike, 0)} · ${prettyRule(s.rule)}</span>
       <span class="spike-time">${timeAgo(s.detected_at)}</span>
     </div>
     <div class="spike-nums">
-      raw <b class="chg-up">${signedPct(s.raw_pct_change)}</b>
-      ${adj != null ? `· adj <b class="${adj >= 0 ? "chg-up" : "chg-down"}">${signedPct(adj)}</b>` : `· adj <b>n/a</b>`}
+      Raw <b class="chg-up">${signedPct(s.raw_pct_change)}</b>
+      ${adj != null ? `· Adj <b class="${adj >= 0 ? "chg-up" : "chg-down"}">${signedPct(adj)}</b>` : `· Adj <b>n/a</b>`}
       ${s.spot_move_pct != null ? `· spot ${signedPct(s.spot_move_pct, 2)}` : ""}
     </div>
-    ${s.would_suppress ? `<span class="suppress-tag">likely smile roll</span>` : ""}
+    <div class="badges">
+      ${s.would_suppress ? `<span class="badge smile">likely smile roll</span>` : `<span class="badge real">real vol move</span>`}
+      ${isRound(s.strike) ? `<span class="badge round">round ×25</span>` : ""}
+    </div>
   </div>`;
 }
 
@@ -253,17 +272,34 @@ async function loadHistory() {
   const strike = $("hist-strike").value;
   const side = $("hist-side").value;
   const hours = +$("hist-window").value;
+  const showUnder = $("show-underlying").checked;
   const wrap = $("hist-chart");
   if (!strike) { wrap.innerHTML = `<div class="empty">No strikes available yet.</div>`; return; }
 
   wrap.innerHTML = `<div class="loading">Loading…</div>`;
   const since = new Date(Date.now() - hours * 3600 * 1000).toISOString();
-  const rows = await rest(
+
+  // IV series for the chosen strike, and (optionally) the spot path over
+  // the same window from the snapshots table — so you can see whether a
+  // vol move lined up with the underlying moving.
+  const reqs = [rest(
     `iv_ticks?series_id=eq.${sid}&strike=eq.${strike}&side=eq.${side}&snapshot_ts=gte.${since}` +
     `&iv=not.is.null&select=snapshot_ts,iv&order=snapshot_ts`
-  );
+  )];
+  if (showUnder) reqs.push(rest(
+    `snapshots?series_id=eq.${sid}&snapshot_ts=gte.${since}&spot=not.is.null&select=snapshot_ts,spot&order=snapshot_ts`
+  ));
+  const [ivRows, underRows] = await Promise.all(reqs);
+
   $("hist-title").textContent = `${side === "c" ? "Call" : "Put"} ${strike} IV — last ${hours}h`;
-  drawChart(wrap, rows.map((r) => [new Date(r.snapshot_ts).getTime(), r.iv]));
+  const iv = ivRows.map((r) => [new Date(r.snapshot_ts).getTime(), r.iv]);
+  const under = (underRows || []).map((r) => [new Date(r.snapshot_ts).getTime(), r.spot]);
+
+  $("hist-legend").innerHTML = showUnder && under.length
+    ? `<span class="legend-item"><span class="legend-sw" style="background:#2DD4A7"></span>IV %</span>` +
+      `<span class="legend-item"><span class="legend-sw" style="background:#FF9F0A"></span>Spot</span>`
+    : "";
+  drawChart(wrap, iv, showUnder ? under : null);
 }
 
 async function populateStrikeOptions(sid) {
@@ -275,50 +311,142 @@ async function populateStrikeOptions(sid) {
   if (rows.length) $("hist-strike").selectedIndex = Math.floor(rows.length / 2);
 }
 
-function drawChart(wrap, pts) {
-  if (pts.length < 2) { wrap.innerHTML = `<div class="empty">Not enough history for this strike yet — check back after a few more snapshots.</div>`; return; }
-  const W = wrap.clientWidth || 800, H = 320, m = { t: 16, r: 16, b: 28, l: 44 };
-  const xs = pts.map((p) => p[0]), ys = pts.map((p) => p[1]);
+function drawChart(wrap, iv, under) {
+  if (iv.length < 2) { wrap.innerHTML = `<div class="empty">Not enough history for this strike yet — check back after a few more snapshots.</div>`; return; }
+  const W = wrap.clientWidth || 900, H = 360, m = { t: 18, r: under ? 52 : 18, b: 30, l: 52 };
+  const iw = W - m.l - m.r, ih = H - m.t - m.b;
+
+  const xs = iv.map((p) => p[0]);
   const xmin = Math.min(...xs), xmax = Math.max(...xs);
+  const px = (x) => m.l + ((x - xmin) / (xmax - xmin || 1)) * iw;
+
+  // Left axis: IV %.
+  const ys = iv.map((p) => p[1]);
   let ymin = Math.min(...ys), ymax = Math.max(...ys);
   const pad = (ymax - ymin) * 0.15 || 1; ymin -= pad; ymax += pad;
-  const px = (x) => m.l + ((x - xmin) / (xmax - xmin || 1)) * (W - m.l - m.r);
-  const py = (y) => m.t + (1 - (y - ymin) / (ymax - ymin || 1)) * (H - m.t - m.b);
+  const py = (y) => m.t + (1 - (y - ymin) / (ymax - ymin || 1)) * ih;
+
+  // Right axis: spot, only when overlay is on. Independent scale so the
+  // two lines share the plot without one flattening the other.
+  let uymin, uymax, upy = null;
+  if (under && under.length) {
+    const us = under.map((p) => p[1]);
+    uymin = Math.min(...us); uymax = Math.max(...us);
+    const upad = (uymax - uymin) * 0.15 || 1; uymin -= upad; uymax += upad;
+    upy = (y) => m.t + (1 - (y - uymin) / (uymax - uymin || 1)) * ih;
+  }
 
   let g = "";
-  const yticks = 4;
-  for (let i = 0; i <= yticks; i++) {
-    const yv = ymin + (i / yticks) * (ymax - ymin), yy = py(yv);
+  const yt = 4;
+  for (let i = 0; i <= yt; i++) {
+    const yv = ymin + (i / yt) * (ymax - ymin), yy = py(yv);
     g += `<line class="grid" x1="${m.l}" y1="${yy}" x2="${W - m.r}" y2="${yy}"/>`;
-    g += `<text class="axis-label" x="${m.l - 8}" y="${yy + 3}" text-anchor="end">${yv.toFixed(1)}</text>`;
+    g += `<text class="axis-label" x="${m.l - 8}" y="${yy + 3}" text-anchor="end">${yv.toFixed(1)}%</text>`;
+    if (upy) g += `<text class="axis-label" x="${W - m.r + 8}" y="${yy + 3}" text-anchor="start" fill="#FF9F0A">${(uymin + (i/yt)*(uymax-uymin)).toFixed(0)}</text>`;
   }
-  const xticks = 4;
-  for (let i = 0; i <= xticks; i++) {
-    const xv = xmin + (i / xticks) * (xmax - xmin), xx = px(xv);
+  const xt = 4;
+  for (let i = 0; i <= xt; i++) {
+    const xv = xmin + (i / xt) * (xmax - xmin), xx = px(xv);
     const d = new Date(xv), lbl = `${d.getHours()}:${String(d.getMinutes()).padStart(2, "0")}`;
     g += `<text class="axis-label" x="${xx}" y="${H - 10}" text-anchor="middle">${lbl}</text>`;
   }
-  const path = pts.map((p, i) => `${i ? "L" : "M"}${px(p[0]).toFixed(1)},${py(p[1]).toFixed(1)}`).join("");
-  wrap.innerHTML = `<svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}">${g}<path class="series-line" d="${path}"/></svg>`;
+
+  const ivLine = iv.map((p, i) => `${i ? "L" : "M"}${px(p[0]).toFixed(1)},${py(p[1]).toFixed(1)}`).join("");
+  const area = `M${px(iv[0][0]).toFixed(1)},${py(ymin).toFixed(1)} ` +
+    iv.map((p) => `L${px(p[0]).toFixed(1)},${py(p[1]).toFixed(1)}`).join("") +
+    ` L${px(iv[iv.length-1][0]).toFixed(1)},${py(ymin).toFixed(1)} Z`;
+  let underPath = "";
+  if (upy) underPath = `<path class="under-line" d="${under.map((p,i)=>`${i?"L":"M"}${px(p[0]).toFixed(1)},${upy(p[1]).toFixed(1)}`).join("")}"/>`;
+
+  wrap.innerHTML = `<div class="chart-host">
+    <svg viewBox="0 0 ${W} ${H}" width="100%" height="${H}" id="hist-svg">
+      <defs>
+        <linearGradient id="lg" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#2DD4A7"/><stop offset="100%" stop-color="#34C7F0"/></linearGradient>
+        <linearGradient id="ag" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2DD4A7" stop-opacity="0.30"/><stop offset="100%" stop-color="#2DD4A7" stop-opacity="0"/></linearGradient>
+      </defs>
+      ${g}
+      <path class="series-area" d="${area}"/>
+      <path class="series-line" d="${ivLine}"/>
+      ${underPath}
+      <g id="cross" style="opacity:0">
+        <line class="crosshair" id="cx" y1="${m.t}" y2="${H - m.b}"/>
+        <circle class="cross-dot" id="cd" r="4"/>
+        ${upy ? '<circle class="cross-dot-u" id="cdu" r="4"/>' : ''}
+      </g>
+    </svg>
+    <div class="chart-tip" id="tip"></div>
+  </div>`;
+
+  // --- crosshair interaction (TradingView-style) ---
+  const svg = document.getElementById("hist-svg");
+  const cross = document.getElementById("cross");
+  const tip = document.getElementById("tip");
+  const host = wrap.querySelector(".chart-host");
+
+  function nearest(arr, t) {
+    let lo = 0, hi = arr.length - 1;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid][0] < t) lo = mid + 1; else hi = mid; }
+    if (lo > 0 && Math.abs(arr[lo-1][0]-t) < Math.abs(arr[lo][0]-t)) lo--;
+    return arr[lo];
+  }
+
+  svg.addEventListener("mousemove", (e) => {
+    const rect = svg.getBoundingClientRect();
+    const sx = (e.clientX - rect.left) / rect.width * W;
+    if (sx < m.l || sx > W - m.r) { cross.style.opacity = 0; tip.style.opacity = 0; return; }
+    const t = xmin + ((sx - m.l) / iw) * (xmax - xmin);
+    const ivPt = nearest(iv, t);
+    cross.style.opacity = 1;
+    document.getElementById("cx").setAttribute("x1", px(ivPt[0]));
+    document.getElementById("cx").setAttribute("x2", px(ivPt[0]));
+    document.getElementById("cd").setAttribute("cx", px(ivPt[0]));
+    document.getElementById("cd").setAttribute("cy", py(ivPt[1]));
+    let underRow = "";
+    if (upy && under.length) {
+      const uPt = nearest(under, ivPt[0]);
+      document.getElementById("cdu").setAttribute("cx", px(uPt[0]));
+      document.getElementById("cdu").setAttribute("cy", upy(uPt[1]));
+      underRow = `<div class="tip-row"><span class="tip-sw" style="background:#FF9F0A"></span>Spot <b>${uPt[1].toFixed(2)}</b></div>`;
+    }
+    const d = new Date(ivPt[0]);
+    tip.innerHTML = `<div class="tip-time">${d.toLocaleString([], {month:"short",day:"numeric",hour:"2-digit",minute:"2-digit"})}</div>
+      <div class="tip-row"><span class="tip-sw" style="background:#2DD4A7"></span>IV <b>${ivPt[1].toFixed(2)}%</b></div>${underRow}`;
+    // position tooltip, flipping side near the right edge
+    const hostRect = host.getBoundingClientRect();
+    const tipX = (px(ivPt[0]) / W) * hostRect.width;
+    tip.style.opacity = 1;
+    const flip = tipX > hostRect.width - 160;
+    tip.style.left = (flip ? tipX - tip.offsetWidth - 14 : tipX + 14) + "px";
+    tip.style.top = "18px";
+  });
+  svg.addEventListener("mouseleave", () => { cross.style.opacity = 0; tip.style.opacity = 0; });
 }
 
 /* ---------- Spike Log view ---------- */
 async function loadSpikes() {
   const sid = $("spike-series").value;
+  const f = state.filters;
   const list = $("spike-list");
   list.innerHTML = `<div class="loading">Loading…</div>`;
   const since = new Date(Date.now() - 7 * 24 * 3600 * 1000).toISOString();
-  let q = `spike_events?detected_at=gte.${since}&select=*&order=detected_at.desc&limit=300`;
+  let q = `spike_events?detected_at=gte.${since}&select=*&order=detected_at.desc&limit=500`;
   if (sid) q += `&series_id=eq.${sid}`;
+  if (f.rule) q += `&rule=eq.${f.rule}`;
   let rows = await rest(q);
 
-  if (state.spikeFilter === "real") rows = rows.filter((r) => !r.would_suppress);
-  else if (state.spikeFilter === "suppressed") rows = rows.filter((r) => r.would_suppress);
+  // Client-side filters (kept here so combining them stays simple and
+  // instant — the dataset per week is small enough that this is free).
+  if (f.side !== "all") rows = rows.filter((r) => r.side === f.side);
+  if (f.type === "real") rows = rows.filter((r) => !r.would_suppress);
+  else if (f.type === "smile") rows = rows.filter((r) => r.would_suppress);
+  if (f.roundOnly) rows = rows.filter((r) => isRound(r.strike));
+  if (f.minRaw != null) rows = rows.filter((r) => r.raw_pct_change * 100 >= f.minRaw);
+  if (f.maxRaw != null) rows = rows.filter((r) => r.raw_pct_change * 100 <= f.maxRaw);
 
-  $("spike-count").textContent = `${rows.length} in 7d`;
+  $("spike-count").textContent = `${rows.length} shown`;
   list.innerHTML = rows.length
     ? rows.map(spikeHtml).join("")
-    : `<div class="empty">Nothing matches this filter.</div>`;
+    : `<div class="empty">No detections match these filters. Try widening them.</div>`;
 }
 
 /* ---------- System view ---------- */
@@ -366,19 +494,32 @@ function wire() {
   });
 
   $("chain-series").addEventListener("change", loadChain);
-  ["hist-series", "hist-strike", "hist-side", "hist-window"].forEach((id) =>
+  ["hist-series", "hist-strike", "hist-side", "hist-window", "show-underlying"].forEach((id) =>
     $(id).addEventListener("change", () => {
       if (id === "hist-series") $("hist-strike").dataset.sid = "";
       loadHistory();
     }));
   $("spike-series").addEventListener("change", loadSpikes);
-  document.querySelectorAll(".chip").forEach((c) =>
-    c.addEventListener("click", () => {
-      document.querySelectorAll(".chip").forEach((x) => x.classList.remove("on"));
-      c.classList.add("on");
-      state.spikeFilter = c.dataset.filter;
-      loadSpikes();
-    }));
+
+  // Side chips (all / calls / puts) and type chips (any / real / smile)
+  // are two independent single-select groups.
+  function bindChipGroup(groupId, key, attr) {
+    document.querySelectorAll(`#${groupId} .chip`).forEach((c) =>
+      c.addEventListener("click", () => {
+        document.querySelectorAll(`#${groupId} .chip`).forEach((x) => x.classList.remove("on"));
+        c.classList.add("on");
+        state.filters[key] = c.dataset[attr];
+        loadSpikes();
+      }));
+  }
+  bindChipGroup("side-chips", "side", "side");
+  bindChipGroup("type-chips", "type", "type");
+
+  $("round-only").addEventListener("change", (e) => { state.filters.roundOnly = e.target.checked; loadSpikes(); });
+  $("spike-rule").addEventListener("change", (e) => { state.filters.rule = e.target.value; loadSpikes(); });
+  const num = (v) => (v === "" || isNaN(+v) ? null : +v);
+  $("min-raw").addEventListener("input", (e) => { state.filters.minRaw = num(e.target.value); debouncedSpikes(); });
+  $("max-raw").addEventListener("input", (e) => { state.filters.maxRaw = num(e.target.value); debouncedSpikes(); });
 }
 
 /* ---------- start ---------- */

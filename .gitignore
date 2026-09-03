@@ -1,0 +1,8 @@
+worker/.env
+!worker/.env.example
+worker/__pycache__/
+*.pyc
+logs/
+worker/processed/
+worker/failed/
+*.xlsx

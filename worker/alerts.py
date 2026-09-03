@@ -26,36 +26,42 @@ STRIKE_GROUP_DISTANCE = 30
 
 
 def group_events(events):
-    """Collapses adjacent strikes on the same (side, rule) into one
+    """Collapses adjacent strikes on the same (side, rule, direction)
+    into one group. Direction is part of the key so an up-spike and a
+    down-crush on the same side/rule never merge into one nonsensical
     group. All events in a pass share a snapshot, so unlike the original
     there is no need for a wall-clock proximity test."""
     buckets = {}
     for e in events:
-        buckets.setdefault((e["side"], e["rule"]), []).append(e)
+        buckets.setdefault((e["side"], e["rule"], e.get("direction", "spike")), []).append(e)
 
     groups = []
-    for (side, rule), items in buckets.items():
+    for (side, rule, direction), items in buckets.items():
         items.sort(key=lambda e: e["strike"])
         current = [items[0]]
         for e in items[1:]:
             if e["strike"] - current[-1]["strike"] <= STRIKE_GROUP_DISTANCE:
                 current.append(e)
             else:
-                groups.append(_summarise(side, rule, current))
+                groups.append(_summarise(side, rule, direction, current))
                 current = [e]
-        groups.append(_summarise(side, rule, current))
+        groups.append(_summarise(side, rule, direction, current))
     return groups
 
 
-def _summarise(side, rule, items):
+def _summarise(side, rule, direction, items):
     strikes = [e["strike"] for e in items]
     adj = [e["adj_pct_change"] for e in items if e["adj_pct_change"] is not None]
+    # For a crush (negative changes) the "biggest" move is the most
+    # negative, so pick by magnitude rather than max().
+    biggest_raw = max((e["raw_pct_change"] for e in items), key=abs)
+    biggest_adj = max(adj, key=abs) if adj else None
     return {
-        "side": side, "rule": rule, "count": len(items),
+        "side": side, "rule": rule, "direction": direction, "count": len(items),
         "strike_range": f"{strikes[0]:g}" if len(strikes) == 1
                         else f"{strikes[0]:g}-{strikes[-1]:g}",
-        "max_raw": max(e["raw_pct_change"] for e in items),
-        "max_adj": max(adj) if adj else None,
+        "max_raw": biggest_raw,
+        "max_adj": biggest_adj,
         "severity": max((e["severity"] for e in items),
                         key=lambda s: ("info", "warn", "high").index(s)),
         # A group only counts as filtered if EVERY member would be
@@ -73,9 +79,10 @@ ICON = {"high": "\U0001F534", "warn": "\U0001F7E0", "info": "\U0001F535"}
 
 def format_group(symbol, g):
     side = "CALL" if g["side"] == "c" else "PUT"
-    head = (f"{ICON[g['severity']]} IV {g['rule']} — {symbol} {side} "
+    kind = "CRUSH" if g.get("direction") == "crush" else "SPIKE"
+    head = (f"{ICON[g['severity']]} IV {kind} {g['rule']} — {symbol} {side} "
             f"{g['strike_range']}" + (f" (x{g['count']})" if g["count"] > 1 else ""))
-    lines = [head, f"Raw change: +{g['max_raw']*100:.1f}%"]
+    lines = [head, f"Raw change: {g['max_raw']*100:+.1f}%"]
 
     if g["max_adj"] is not None:
         lines.append(f"Smile-adjusted: {g['max_adj']*100:+.1f}%")
@@ -118,11 +125,17 @@ def notify(symbol, events):
 
     order = {"high": 0, "warn": 1, "info": 2}
     groups.sort(key=lambda g: (order[g["severity"]],
-                               -(g["max_adj"] if g["max_adj"] is not None else g["max_raw"])))
+                               -abs(g["max_adj"] if g["max_adj"] is not None else g["max_raw"])))
 
     to_send = groups[:config.MAX_ALERTS_PER_CYCLE]
+    alerted_ids = []
     for g in to_send:
-        send(format_group(symbol, g))
+        if send(format_group(symbol, g)):
+            # Record which detections actually went out, so the DB can
+            # answer "which alerts reached me" rather than always empty.
+            alerted_ids.extend(e["id"] for e in g["items"] if e.get("id") is not None)
+    if alerted_ids:
+        db.mark_alerted(alerted_ids)
     if len(groups) > len(to_send):
         send(f"...and {len(groups) - len(to_send)} more {symbol} groups this cycle "
              f"(see the database; suppressed to keep the feed readable).")

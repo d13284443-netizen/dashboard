@@ -168,15 +168,21 @@ class TestWatchdogStaleness:
                             lambda *a, **k: [{"last_success_at": None}])
         assert watchdog.last_success() is None
 
-    def test_alerted_flag_is_process_local(self):
-        """GAP. The `alerted` flag lives in a local variable, so a
-        watchdog restart during a long outage re-sends the stale alert.
-        Minor, but it defeats the 'two messages, not forty' promise if
-        the service is flapping. Persisting it in worker_health would
-        fix it."""
+    def test_alerted_flag_is_persisted_across_restarts(self):
+        """FIXED (was: process-local flag re-sent on restart).
+
+        The stale-alert flag is now seeded from worker_health on startup
+        and written back on every transition, so a watchdog restart
+        during an outage resumes its state instead of re-firing —
+        keeping the 'two messages, not forty' promise even when the
+        service flaps.
+        """
         import inspect
-        src = inspect.getsource(watchdog.run)
-        assert "alerted = False" in src and "worker_health" not in src
+        run_src = inspect.getsource(watchdog.run)
+        mod_src = inspect.getsource(watchdog)
+        assert "_load_alerted()" in run_src, "run must seed the flag from persisted state"
+        assert "_save_alerted" in run_src, "run must persist the flag on change"
+        assert "worker_health" in mod_src, "persistence uses worker_health"
 
 
 # --------------------------------------------------------------------

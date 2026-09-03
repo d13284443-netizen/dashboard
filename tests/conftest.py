@@ -63,6 +63,7 @@ class FakeDB:
         self.logs = []
         self.series_ids = {}
         self._next_series = 1
+        self._next_id = 1
         self.fail_on_table = None   # set to a table name to simulate a write failure
 
     # ---- reads
@@ -89,7 +90,17 @@ class FakeDB:
         self.inserted.append((table, [dict(r) for r in rows], on_conflict, upsert))
 
     def insert_returning(self, table, rows):
-        return [{"id": 1}]
+        if table == self.fail_on_table:
+            raise RuntimeError(f"simulated write failure on {table}")
+        # Record like insert() so rows_for()/conflict_spec() see these
+        # writes too, and hand back one synthetic id per row so callers
+        # that tag events with their id (detector -> alerts) work.
+        self.inserted.append((table, [dict(r) for r in rows], None, False))
+        out = []
+        for r in rows:
+            out.append({**r, "id": self._next_id})
+            self._next_id += 1
+        return out
 
     def upsert_health(self, worker, success=False, error=None, detail=None):
         self.health.append({"worker": worker, "success": success,

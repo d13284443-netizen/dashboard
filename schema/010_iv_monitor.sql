@@ -259,6 +259,7 @@ create table if not exists spike_events (
     moneyness real,
     delta real,
     severity text not null default 'info' check (severity in ('info','warn','high')),
+    direction text not null default 'spike' check (direction in ('spike','crush')),
     would_suppress boolean not null default false,
     alerted boolean not null default false,
     acknowledged boolean not null default false

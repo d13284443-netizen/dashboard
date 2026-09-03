@@ -37,6 +37,7 @@ numbers accumulate alongside — so the decision to switch over is made
 from a week of labelled evidence rather than from a guess.
 """
 import datetime
+import math
 from collections import defaultdict
 
 import config
@@ -67,7 +68,11 @@ def _parse_ts(s):
 def _bucket(m):
     if m is None:
         return "na"
-    return str(int(round(m / config.MONEYNESS_BUCKET)))
+    # math.floor(x + 0.5) rounds half UP consistently. Python's built-in
+    # round() uses banker's rounding (half-to-even), which makes the
+    # moneyness bands unevenly spaced — 0.5 rounds to 0 but 1.5 rounds to
+    # 2 — so adjacent events could land in non-adjacent buckets.
+    return str(math.floor(m / config.MONEYNESS_BUCKET + 0.5))
 
 
 def _severity(adj, raw):
@@ -144,7 +149,10 @@ def run_for_series(series_id):
         ema = time_weighted_ema(points, config.EMA_HALFLIFE_MINUTES)
         if ema and ema > 0:
             raw = (iv_now - ema) / ema
-            if raw > config.SPIKE_THRESHOLD_PCT:
+            # Spike (raw > +threshold) always fires. Crush (raw <
+            # -threshold) fires only when DETECT_CRUSH is on. Using the
+            # signed raw throughout; direction is read from its sign.
+            if raw > config.SPIKE_THRESHOLD_PCT or (config.DETECT_CRUSH and raw < -config.SPIKE_THRESHOLD_PCT):
                 # The EMA baseline is a weighted blend across time and so
                 # has no single snapshot to take a smile from. The
                 # half-life point is the closest honest stand-in for
@@ -163,7 +171,7 @@ def run_for_series(series_id):
             if not base["iv"] or base["iv"] <= 0:
                 continue
             raw = (iv_now - base["iv"]) / base["iv"]
-            if raw > config.SPIKE_THRESHOLD_PCT:
+            if raw > config.SPIKE_THRESHOLD_PCT or (config.DETECT_CRUSH and raw < -config.SPIKE_THRESHOLD_PCT):
                 candidates.append((f"drift_{w:g}h", base["iv"], raw, base["_ts"]))
 
         for rule, baseline_iv, raw, ref_ts in candidates:
@@ -183,7 +191,10 @@ def run_for_series(series_id):
                     skew_then = baseline_iv - base_snap["atm_iv"]
 
             skew_now = (iv_now - atm_now) if atm_now else None
-            would_suppress = adj is not None and adj <= config.SPIKE_THRESHOLD_PCT
+            # Suppression compares MAGNITUDES so it works for crushes too:
+            # a move the smile explains is noise whether up or down.
+            would_suppress = adj is not None and abs(adj) <= config.SPIKE_THRESHOLD_PCT
+            direction = "crush" if raw < 0 else "spike"
 
             events.append({
                 "series_id": series_id,
@@ -197,12 +208,18 @@ def run_for_series(series_id):
                                if (skew_now is not None and skew_then is not None) else None,
                 "moneyness": latest.get("moneyness"), "delta": latest.get("delta"),
                 "severity": _severity(adj, raw),
+                "direction": direction,
                 "would_suppress": would_suppress,
             })
             suppressed.add(key)
 
     if events:
-        db.insert("spike_events", events)
+        # insert_returning so each event carries its DB id back — the
+        # alert step marks the ones it actually sends as alerted=true,
+        # which is what makes "which detections reached me" answerable.
+        created = db.insert_returning("spike_events", events)
+        for e, c in zip(events, created):
+            e["id"] = c.get("id")
     db.upsert_health("detector", success=True, detail={
         "series_id": series_id, "events": len(events),
         "suppressed_by_smile": sum(1 for e in events if e["would_suppress"]),

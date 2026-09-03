@@ -31,8 +31,11 @@ python -u ingest.py   # run in the foreground first
 
 Watch one download cycle land before installing services. You want to
 see a line like `GCE1/Q26 @ 09:15 — 247 strikes, 132 liquid, spot 3418.7`.
-If `liquid` is a small fraction of `strikes`, the liquidity gate is too
-tight for your chain — loosen `MIN_OI` or `MAX_SPREAD_PCT` in `.env`.
+The `liquid` number counts liquid *legs* (call and put sides counted
+separately), so its ceiling is `strikes × 2`, not `strikes`. The
+dashboard's Liquid stat shows it as `liquid / (strikes × 2)`. If that
+ratio is a small fraction, the liquidity gate is too tight for your
+chain — loosen `MIN_OI` or `MAX_SPREAD_PCT` in `.env`.
 
 **3. Services.** Once the foreground run looks right:
 

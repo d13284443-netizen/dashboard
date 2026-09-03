@@ -199,11 +199,12 @@ class TestSendGuards:
                                 OSError("network down")))
         assert alerts.send("hello") is False
 
-    def test_alerted_column_is_never_set(self):
-        """GAP, not a crash. spike_events has an `alerted` boolean, but
-        nothing in alerts.py or detector.py ever writes it. Any future
-        query of the form 'which detections actually reached me' will
-        return nothing. Either populate it after a successful send or
-        drop the column."""
+    def test_alerted_column_is_populated_after_send(self):
+        """FIXED (was: nothing ever wrote `alerted`).
+
+        alerts.notify now calls db.mark_alerted with the ids of the
+        detections it actually sent, so a query of the form 'which
+        detections reached me' returns them instead of always nothing.
+        """
         import inspect
-        assert "alerted" not in inspect.getsource(alerts)
+        assert "mark_alerted" in inspect.getsource(alerts)

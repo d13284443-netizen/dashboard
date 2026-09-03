@@ -94,14 +94,32 @@ language plpgsql
 as $$
 declare
     r record;
+    part_day date;
     cutoff date := current_date - keep_days;
+    rolled boolean;
 begin
     for r in
         select relname from pg_class
         where relname ~ '^iv_ticks_\d{8}$'
           and to_date(right(relname, 8), 'YYYYMMDD') < cutoff
     loop
-        execute format('drop table if exists %I', r.relname);
+        part_day := to_date(right(r.relname, 8), 'YYYYMMDD');
+        -- Never drop a day that wasn't rolled into iv_daily first. The
+        -- rollup and drop are separate cron jobs; if the rollup failed
+        -- or was skipped, dropping here would silently erase that day's
+        -- history forever. Verify a rollup exists; if not, roll it up
+        -- now, then only drop on confirmed success.
+        select exists (select 1 from iv_daily where day = part_day) into rolled;
+        if not rolled then
+            perform rollup_iv_daily(part_day);
+            select exists (select 1 from iv_daily where day = part_day) into rolled;
+        end if;
+        if rolled then
+            execute format('drop table if exists %I', r.relname);
+        else
+            raise warning 'iv_ticks partition % not dropped: no iv_daily rollup for % (kept to avoid data loss)',
+                r.relname, part_day;
+        end if;
     end loop;
 end;
 $$;

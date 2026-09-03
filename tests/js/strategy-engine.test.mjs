@@ -103,20 +103,19 @@ test("short future inverts", () => {
   close(legExpiryPayoff(f, 3450), -50);
 });
 
-test("a future with entry_price 0 silently reports spot as profit", () => {
-  /* PINNED HAZARD, not a bug in the function itself.
+test("a future with entry_price 0 is rejected, not silently mispriced", () => {
+  /* FIXED (was a pinned hazard).
 
-     The convention is "strike == entry_price" for futures, and the code
-     reads entry_price only. A caller that populates `strike` but leaves
-     entry_price at its 0 default gets a payoff of 3450 per unit instead
-     of 50 — a 69x overstatement that looks like a plausible number.
-
-     mkLeg in strategy-scanner.js always sets entry_price from the
-     chain, so the live path is safe; a hand-built leg or a future
-     import path is not. Worth a guard: throw when option_type is
-     "future" and entry_price is falsy. */
+     A futures leg with no entry_price would report spot itself as
+     profit — a ~69x overstatement that looks plausible. legExpiryPayoff
+     now throws instead, so a hand-built or imported leg can't slip a
+     wrong number through. The builder defaults entry to spot, so the
+     live path is unaffected. */
   const bad = leg({ option_type: "future", action: "buy", strike: 3400, entry_price: 0 });
-  close(legExpiryPayoff(bad, 3450), 3450);
+  assert.throws(() => legExpiryPayoff(bad, 3450), /entry_price/);
+  // A properly-priced future still works.
+  const good = leg({ option_type: "future", action: "buy", strike: 3400, entry_price: 3400 });
+  close(legExpiryPayoff(good, 3450), 50);
 });
 
 /* ---------------- aggregation ---------------- */
@@ -421,18 +420,14 @@ test("time decay: the same option is worth less later", () => {
 });
 
 test("payoffCurveProjected without years_to_own_expiry collapses to intrinsic", () => {
-  /* PINNED HAZARD. `leg.years_to_own_expiry ?? 0` means a leg that never
-     had the field gets remaining = -yearsElapsed, which is <= 0, so
-     every projection silently returns the EXPIRY payoff instead of a
-     time-value curve. The "what if it's <date>" slider would appear to
-     work while showing the wrong curve.
+  /* FIXED (was a pinned hazard).
 
-     Recommended: throw, or fall back to the strategy's own expiry,
-     rather than defaulting to 0. */
+     A leg missing years_to_own_expiry would make remaining time <= 0
+     and silently return the EXPIRY payoff — a wrong time-value curve
+     that looks like it works. payoffCurveProjected now throws instead,
+     so the mistake surfaces rather than misleading. */
   const legs = [longCall(3400, 20)];   // no years_to_own_expiry
-  const projected = payoffCurveProjected(legs, [3500], 0.1)[0].pnl;
-  const atExpiry = strategyExpiryPayoff(legs, 3500);
-  close(projected, atExpiry);
+  assert.throws(() => payoffCurveProjected(legs, [3500], 0.1), /years_to_own_expiry/);
 });
 
 test("a properly dated leg projects above its expiry payoff while time remains", () => {

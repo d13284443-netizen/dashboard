@@ -214,20 +214,18 @@ class TestSuppression:
         assert detector._bucket(None) == "na"
         assert detector._bucket(-0.02) == "-2"
 
-    def test_bucket_edges_use_bankers_rounding(self):
-        """Minor but worth pinning: Python's round() rounds halves to
-        even, so the bucket boundaries are not evenly spaced. 0.005
-        lands in bucket 0 while 0.015 lands in bucket 2 — bucket 1 is
-        entered and left asymmetrically.
+    def test_bucket_edges_are_evenly_spaced(self):
+        """FIXED (was: banker's rounding gave uneven bands).
 
-        Harmless at current tolerances (suppression is approximate by
-        design), but it means a strike sitting exactly on a boundary
-        behaves differently above and below the money. Use
-        math.floor(m / BUCKET) if even bands are ever needed.
+        _bucket now uses math.floor(m / BUCKET + 0.5), which rounds
+        halves up consistently, so every band is the same width and a
+        strike on a boundary behaves symmetrically. With BUCKET=0.01 the
+        half-points 0.005 / 0.015 / 0.025 land in 1 / 2 / 3.
         """
-        assert detector._bucket(0.005) == "0"
+        assert detector._bucket(0.005) == "1"
         assert detector._bucket(0.015) == "2"
-        assert detector._bucket(0.025) == "2"
+        assert detector._bucket(0.025) == "3"
+        assert detector._bucket(0.004) == "0"
 
 
 class TestSmileEvidence:

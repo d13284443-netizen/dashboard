@@ -167,16 +167,19 @@ class TestLiquidityGate:
     def test_missing_iv_fails(self, over):
         assert ingest.is_liquid(rec(**over), "call") is False
 
-    def test_missing_oi_is_treated_as_acceptable(self):
-        """DOCUMENTED GAP. The docstring says three independent ways a
-        quote can be untrustworthy, 'any one of which disqualifies it'.
-        But absent OI and absent delta both pass the gate, because the
-        checks are guarded on `is not None`.
-
-        A CQG export missing the OI column entirely would disable that
-        third of the gate silently. Whether that fail-open behaviour is
-        right is a product decision — but it should be a decided one.
+    def test_missing_oi_or_delta_fails_closed_by_default(self, monkeypatch):
+        """DECIDED (was a documented gap). The gate now fails closed on
+        missing OI or delta by default — a strike whose liquidity can't
+        be confirmed is treated as illiquid, honouring the docstring's
+        'any one disqualifies'. Configurable back to lenient for a feed
+        that legitimately omits these fields.
         """
+        # Default: missing OI or delta disqualifies.
+        assert ingest.is_liquid(rec(call_oi=None), "call") is False
+        assert ingest.is_liquid(rec(call_delta=None), "call") is False
+        # Opt back into lenient behaviour.
+        monkeypatch.setattr(ingest.config, "REQUIRE_OI", False)
+        monkeypatch.setattr(ingest.config, "REQUIRE_DELTA", False)
         assert ingest.is_liquid(rec(call_oi=None), "call") is True
         assert ingest.is_liquid(rec(call_delta=None), "call") is True
 

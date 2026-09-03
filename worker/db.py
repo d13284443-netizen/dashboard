@@ -99,6 +99,22 @@ def insert_returning(table, rows):
     return resp.json()
 
 
+def mark_alerted(event_ids):
+    """Set alerted=true on the given spike_events rows, so a query for
+    'which detections actually reached me' returns them. Best-effort:
+    the alert already went out, so a failure to mark must not raise."""
+    if not event_ids:
+        return
+    try:
+        ids = ",".join(str(int(i)) for i in event_ids)
+        url = f"{config.SUPABASE_URL}/rest/v1/spike_events"
+        requests.patch(url, headers=_headers({"Prefer": "return=minimal"}),
+                       params={"id": f"in.({ids})"},
+                       json={"alerted": True}, timeout=15)
+    except Exception:
+        pass
+
+
 def upsert_health(worker, success=False, error=None, detail=None):
     fields = {"worker": worker}
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()

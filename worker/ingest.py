@@ -63,7 +63,14 @@ def parse_expiry_label(label):
 def is_liquid(rec, side):
     """Gate applied once, at write time, so every downstream consumer
     sees the same definition. Three independent ways a quote can be
-    untrustworthy, any one of which disqualifies it."""
+    untrustworthy, any one of which disqualifies it.
+
+    Fails CLOSED on missing OI or delta: the docstring's promise is that
+    any check can disqualify, so a strike whose OI or delta is absent
+    cannot be confirmed liquid and is treated as illiquid. This suits a
+    feed (like this CQG one) that reliably includes both. If a feed
+    legitimately omits them for otherwise-good strikes, set
+    REQUIRE_OI/REQUIRE_DELTA to false to restore lenient behaviour."""
     bid, ask = rec.get(f"{side}_bid"), rec.get(f"{side}_ask")
     if bid is None or ask is None or bid <= 0 or ask <= 0 or ask < bid:
         return False
@@ -71,10 +78,16 @@ def is_liquid(rec, side):
     if mid <= 0 or (ask - bid) / mid > config.MAX_SPREAD_PCT:
         return False
     oi = rec.get(f"{side}_oi")
-    if oi is not None and oi < config.MIN_OI:
+    if oi is None:
+        if config.REQUIRE_OI:
+            return False
+    elif oi < config.MIN_OI:
         return False
     d = rec.get(f"{side}_delta")
-    if d is not None and not (config.MIN_ABS_DELTA <= abs(d) <= config.MAX_ABS_DELTA):
+    if d is None:
+        if config.REQUIRE_DELTA:
+            return False
+    elif not (config.MIN_ABS_DELTA <= abs(d) <= config.MAX_ABS_DELTA):
         return False
     iv = rec.get(f"{side}_impvlt")
     return iv is not None and iv > 0

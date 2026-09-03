@@ -58,6 +58,14 @@ MIN_SAMPLES = int(os.environ.get("MIN_SAMPLES", "4"))
 MIN_BASELINE_SPAN_MINUTES = float(os.environ.get("MIN_BASELINE_SPAN_MINUTES", "60"))
 
 SPIKE_THRESHOLD_PCT = float(os.environ.get("SPIKE_THRESHOLD_PCT", "0.10"))
+
+# Vol CRUSH detection. By default the monitor alerts only on IV rising
+# (a spike). With this on it ALSO alerts on IV falling by the same
+# threshold — a crush — which some traders treat as equally tradeable
+# (e.g. post-event vol collapse). Off by default to preserve the
+# original up-only behaviour; flip to true to get both directions.
+DETECT_CRUSH = os.environ.get("DETECT_CRUSH", "false").lower() == "true"
+
 DRIFT_WINDOWS_HOURS = [float(x) for x in
                        os.environ.get("DRIFT_WINDOWS_HOURS", "1,3,6,24").split(",")]
 
@@ -66,6 +74,11 @@ DRIFT_WINDOWS_HOURS = [float(x) for x in
 MIN_OI = float(os.environ.get("MIN_OI", "10"))
 MAX_SPREAD_PCT = float(os.environ.get("MAX_SPREAD_PCT", "0.50"))
 MIN_ABS_DELTA = float(os.environ.get("MIN_ABS_DELTA", "5"))    # CQG delta is 0-100
+# Fail closed on missing OI/delta by default — a strike whose liquidity
+# can't be confirmed is treated as illiquid. Set to false for a feed
+# that legitimately omits these fields for otherwise-tradeable strikes.
+REQUIRE_OI = os.environ.get("REQUIRE_OI", "true").lower() == "true"
+REQUIRE_DELTA = os.environ.get("REQUIRE_DELTA", "true").lower() == "true"
 MAX_ABS_DELTA = float(os.environ.get("MAX_ABS_DELTA", "95"))
 
 # Suppression, keyed to a moneyness bucket rather than an exact strike.

@@ -72,12 +72,37 @@ def default_partition_count():
     return None
 
 
+def _load_alerted():
+    """Read the persisted stale-alert flag from worker_health, so the
+    watchdog resumes its state across restarts instead of re-alerting."""
+    try:
+        rows = db.fetch_all("worker_health",
+                            {"worker": "eq.watchdog", "select": "detail"})
+        if rows and isinstance(rows[0].get("detail"), dict):
+            return bool(rows[0]["detail"].get("stale_alerted", False))
+    except Exception:
+        pass
+    return False
+
+
+def _save_alerted(value):
+    try:
+        db.upsert_health("watchdog", detail={"stale_alerted": bool(value)})
+    except Exception:
+        pass
+
+
 def run():
     config.require("SUPABASE_URL", "SUPABASE_SERVICE_KEY")
-    alerted = False
+    # Seed the alert flag from the last persisted state, so a restart in
+    # the middle of an outage does NOT re-fire the stale alert (which
+    # would defeat the "two messages, not forty" promise). The flag is
+    # written to worker_health.detail after every send.
+    alerted = _load_alerted()
     partition_alerted = False
     threshold = datetime.timedelta(minutes=STALE_MINUTES)
-    print(f"watchdog: alerting after {STALE_MINUTES} min without a successful ingest")
+    print(f"watchdog: alerting after {STALE_MINUTES} min without a successful ingest"
+          f" (resuming alerted={alerted})")
 
     while True:
         try:
@@ -91,10 +116,12 @@ def run():
                         f"Last successful write: {age}.\n"
                         f"Check Chrome / CQG login on the VPS."):
                     alerted = True
+                    _save_alerted(True)
                     db.log("watchdog", f"stale alert sent (last success {age})", level="error")
             elif not stale and alerted:
                 if send("\u2705 IV monitor: ingest recovered, data is flowing again."):
                     alerted = False
+                    _save_alerted(False)
                     db.log("watchdog", "recovery notice sent")
 
             # Default-partition trap: rows here mean partition creation

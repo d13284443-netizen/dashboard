@@ -34,9 +34,14 @@ export function legExpiryPayoff(leg, spotAtExpiry) {
   const entry = leg.entry_price || 0;
 
   if (leg.option_type === "future") {
-    // strike == entry by convention for futures, so do NOT subtract
-    // entry a second time (that double-count was a real bug the Python
-    // version documents fixing).
+    // strike == entry by convention for futures. A leg that set strike
+    // but left entry_price at 0 would report spot itself as profit — a
+    // ~69x overstatement that looks plausible. Guard it: a real futures
+    // fill is never 0. The builder defaults this to spot, so only a
+    // hand-built or imported leg can trip this.
+    if (!leg.entry_price) {
+      throw new Error("future leg needs entry_price (its fill price); got " + leg.entry_price);
+    }
     const diff = spotAtExpiry - entry;
     return (sign === 1 ? diff : -diff) * qty;
   }
@@ -199,6 +204,17 @@ export function projectLegPrice(type, spotTarget, strike, yearsToExpiryNow, year
 /* Projected P&L curve at a point in TIME before expiry (for the
    "what if it's <date>" slider and calendar spreads). */
 export function payoffCurveProjected(legs, spotRange, yearsElapsed) {
+  // A leg missing years_to_own_expiry would make remaining time <= 0
+  // and silently return the EXPIRY payoff — a wrong "what if it's <date>"
+  // curve that looks like it works. Require the field on every option
+  // leg so the mistake surfaces instead of misleading.
+  for (const leg of legs) {
+    if (leg.option_type !== "future"
+        && (leg.years_to_own_expiry == null || leg.years_to_own_expiry <= 0)) {
+      throw new Error("payoffCurveProjected needs years_to_own_expiry on option leg "
+        + `${leg.action} ${leg.option_type} ${leg.strike}`);
+    }
+  }
   return spotRange.map((s) => {
     let pnl = 0;
     for (const leg of legs) {
@@ -210,7 +226,7 @@ export function payoffCurveProjected(legs, spotRange, yearsElapsed) {
         pnl += (sign === 1 ? diff : -diff) * qty;
       } else {
         const val = projectLegPrice(leg.option_type, s, leg.strike,
-          leg.years_to_own_expiry ?? 0, yearsElapsed, leg.iv_decimal);
+          leg.years_to_own_expiry, yearsElapsed, leg.iv_decimal);
         pnl += (sign === 1 ? val - entry : entry - val) * qty;
       }
     }

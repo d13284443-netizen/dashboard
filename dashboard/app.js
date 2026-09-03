@@ -20,7 +20,8 @@ let refreshTimer = null;
 const ROUND_STEP = 25;  // gold: multiples of 25 count as "round"
 const state = {
   series: [], activeSeries: null,
-  filters: { side: "all", type: "all", roundOnly: false, minRaw: null, maxRaw: null, rule: "" },
+  filters: { side: "all", type: "all", roundOnly: false, minRaw: null, maxRaw: null, rule: "", strikeLo: null, strikeHi: null },
+  lastSpot: null,
 };
 const isRound = (strike) => Math.abs(strike % ROUND_STEP) < 1e-6;
 // Rule labels: ema -> EMA, drift_6h -> Drift 6h (tidy, human)
@@ -190,6 +191,7 @@ async function loadChain() {
   ]);
 
   const snap = snaps[0];
+  if (snap && snap.spot) state.lastSpot = snap.spot;
   renderChainMeta(snap);
   $("chain-updated").textContent = snap ? timeAgo(snap.snapshot_ts) : "";
 
@@ -440,6 +442,8 @@ async function loadSpikes() {
   if (f.type === "real") rows = rows.filter((r) => !r.would_suppress);
   else if (f.type === "smile") rows = rows.filter((r) => r.would_suppress);
   if (f.roundOnly) rows = rows.filter((r) => isRound(r.strike));
+  if (f.strikeLo != null) rows = rows.filter((r) => r.strike >= f.strikeLo);
+  if (f.strikeHi != null) rows = rows.filter((r) => r.strike <= f.strikeHi);
   if (f.minRaw != null) rows = rows.filter((r) => r.raw_pct_change * 100 >= f.minRaw);
   if (f.maxRaw != null) rows = rows.filter((r) => r.raw_pct_change * 100 <= f.maxRaw);
 
@@ -520,6 +524,20 @@ function wire() {
   const num = (v) => (v === "" || isNaN(+v) ? null : +v);
   $("min-raw").addEventListener("input", (e) => { state.filters.minRaw = num(e.target.value); debouncedSpikes(); });
   $("max-raw").addEventListener("input", (e) => { state.filters.maxRaw = num(e.target.value); debouncedSpikes(); });
+  $("strike-lo").addEventListener("input", (e) => { state.filters.strikeLo = num(e.target.value); debouncedSpikes(); });
+  $("strike-hi").addEventListener("input", (e) => { state.filters.strikeHi = num(e.target.value); debouncedSpikes(); });
+  $("range-around-spot").addEventListener("click", () => {
+    // Center the strike window on the latest spot, using the ±width box.
+    // Snaps bounds to the round step so it lines up with round strikes.
+    if (state.lastSpot == null) return;
+    const w = num($("range-width").value) || 200;
+    const lo = Math.floor((state.lastSpot - w) / ROUND_STEP) * ROUND_STEP;
+    const hi = Math.ceil((state.lastSpot + w) / ROUND_STEP) * ROUND_STEP;
+    $("strike-lo").value = lo; $("strike-hi").value = hi;
+    state.filters.strikeLo = lo; state.filters.strikeHi = hi;
+    $("range-around-spot").classList.add("on");
+    loadSpikes();
+  });
 }
 
 /* ---------- start ---------- */

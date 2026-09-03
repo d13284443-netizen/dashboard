@@ -92,7 +92,8 @@ td.call { color:#A7E9D4; }
 td.put { color:#F0C9C4; }
 .atm-row td { background:rgba(45,212,167,0.08) !important; }
 .atm-row td.strike { color:var(--accent); }
-.round-strike td.strike::after { content:"•"; color:var(--accent-2); margin-left:5px; font-size:10px; vertical-align:middle; }
+td.strike { position:relative; }
+.round-strike td.strike::after { content:""; position:absolute; top:50%; right:14px; transform:translateY(-50%); width:5px; height:5px; border-radius:50%; background:var(--accent-2); }
 .table-scroll { max-height:640px; overflow-y:auto; }
 .table-scroll::-webkit-scrollbar { width:8px; }
 .table-scroll::-webkit-scrollbar-thumb { background:rgba(255,255,255,0.1); border-radius:4px; }
@@ -226,6 +227,14 @@ svg .series-area { fill:url(#ag); opacity:0.5; }
         <option value="drift_1h">drift 1h</option><option value="drift_3h">drift 3h</option>
         <option value="drift_6h">drift 6h</option><option value="drift_24h">drift 24h</option>
       </select>
+    </div>
+    <div class="filter-bar">
+      <span class="filter-label">Strike range</span>
+      <input class="num-input tnum" id="strike-lo" type="number" placeholder="min $" step="25">
+      <span class="filter-label">to</span>
+      <input class="num-input tnum" id="strike-hi" type="number" placeholder="max $" step="25">
+      <button class="chip" id="range-around-spot">± around spot</button>
+      <input class="num-input tnum" id="range-width" type="number" placeholder="±$" value="200" step="50" style="width:80px">
     </div>
     <div class="panel"><div class="panel-head"><span>Detections</span><span class="muted" id="spike-count"></span></div><div id="spike-list"></div></div>
   </div>

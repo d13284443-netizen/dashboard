@@ -1,8 +1,20 @@
-worker/.env
-!worker/.env.example
-worker/__pycache__/
-*.pyc
+# SECRETS — never commit. .env holds the Supabase service_role key,
+# which bypasses all Row-Level Security. Treat a leak of this file as a
+# full database compromise: rotate the key in Supabase immediately
+# (Project Settings > API > service_role > Reveal/Rotate).
+.env
+*.env
+!.env.example
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Local runtime artefacts — data and logs, not source
 logs/
-worker/processed/
-worker/failed/
+*.log
+processed/
+failed/
 *.xlsx
